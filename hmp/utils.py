@@ -68,7 +68,7 @@ def uniform_mean_to_scale(mean, shape):
 
 def read_mne_data(pfiles, event_id=None, resp_id=None, epoched=False, sfreq=None, 
                  subj_idx=None, metadata=None, events_provided=None, rt_col='rt', rts=None,
-                 verbose=True, tmin=-.2, tmax=5, offset_after_resp = 0, 
+                 verbose=True, tmin=-.2, tmax=5, offset_after_resp = 0, offset_before_stim = 0,
                  high_pass=None, low_pass = None, pick_channels = 'eeg', baseline=(None, 0),
                  upper_limit_RT=np.inf, lower_limit_RT=0, reject_threshold=None, scale=1, reference=None, ignore_rt=False):
     ''' 
@@ -120,6 +120,8 @@ def read_mne_data(pfiles, event_id=None, resp_id=None, epoched=False, sfreq=None
         Time taken after stimulus onset
     offset_after_resp : float
         Time taken after onset of the response in seconds
+    offset_before_stim : float
+        Time taken before stimulus in seconds
     low_pass : float
         Value of the low pass filter
     high_pass : float
@@ -269,6 +271,7 @@ def read_mne_data(pfiles, event_id=None, resp_id=None, epoched=False, sfreq=None
         if ignore_rt:
             metadata_i[rt_col] = epochs.tmax
         offset_after_resp_samples = np.rint(offset_after_resp*sfreq).astype(int)
+        offset_before_stim_samples = np.rint(offset_before_stim*sfreq).astype(int)
         valid_epoch_index = [x for x,y in enumerate(epochs.drop_log) if len(y) == 0]
         try:#Differences among MNE's versions
             data_epoch = epochs.get_data(copy=False)#preserves index
@@ -295,7 +298,7 @@ def read_mne_data(pfiles, event_id=None, resp_id=None, epoched=False, sfreq=None
         if verbose:
             print(f'{len(rts_arr[rts_arr > 0])} RTs kept of {len(rts_arr)} clean epochs')
         triggers = metadata_i.iloc[:,0].values#assumes first col is trigger
-        cropped_data_epoch = np.empty([len(rts_arr[rts_arr>0]), len(epochs.ch_names), max(rts_arr)+offset_after_resp_samples])
+        cropped_data_epoch = np.empty([len(rts_arr[rts_arr>0]), len(epochs.ch_names), max(rts_arr)+offset_after_resp_samples+offset_before_stim_samples])
         cropped_data_epoch[:] = np.nan
         cropped_trigger = []
         epochs_idx = []
@@ -307,9 +310,9 @@ def read_mne_data(pfiles, event_id=None, resp_id=None, epoched=False, sfreq=None
         for i in range(len(data_epoch)):
             if rts_arr[i] > 0:
                 #Crops the epochs to time 0 (stim onset) up to RT
-                if (np.abs(data_epoch[i,:,time0:time0+rts_arr[i]+offset_after_resp_samples]) < reject_threshold).all():
-                    cropped_data_epoch[j,:,:rts_arr[i]+offset_after_resp_samples] = \
-                    (data_epoch[i,:,time0:time0+rts_arr[i]+offset_after_resp_samples])
+                if (np.abs(data_epoch[i,:,time0-offset_before_stim_samples:time0+rts_arr[i]+offset_after_resp_samples]) < reject_threshold).all():
+                    single_epoch = data_epoch[i,:,time0-offset_before_stim_samples:time0+rts_arr[i]+offset_after_resp_samples]
+                    cropped_data_epoch[j,:,:single_epoch.shape[1]] = single_epoch
                     epochs_idx.append(valid_epoch_index[i])#Keeps trial number
                     cropped_trigger.append(triggers[i])
                     j += 1
@@ -324,7 +327,7 @@ def read_mne_data(pfiles, event_id=None, resp_id=None, epoched=False, sfreq=None
         if verbose:
             print(f'End sampling frequency is {sfreq} Hz')
 
-        epoch_data.append(hmp_data_format(cropped_data_epoch, epochs.info['sfreq'], None, offset_after_resp_samples, epochs=[int(x) for x in epochs_idx], channels = epochs.ch_names, metadata = metadata_i))
+        epoch_data.append(hmp_data_format(cropped_data_epoch, epochs.info['sfreq'], None, offset_after_resp_samples, offset_before_stim_samples, epochs=[int(x) for x in epochs_idx], channels = epochs.ch_names, metadata = metadata_i))
 
         y += 1
     epoch_data = xr.concat(epoch_data, dim = xr.DataArray(subj_idx, dims='participant'),
@@ -438,7 +441,7 @@ def parsing_epoched_eeg(data, rts, conditions, sfreq, start_time=0, offset_after
     data_xr = hmp_data_format(cropped_data_epoch, sfreq, conditions, offset_after_resp_samples, epochs=epochs, channels = channel_columns)
     return data_xr
 
-def hmp_data_format(data, sfreq, events=None, offset=0, participants=[], epochs=None, channels=None, metadata=None):
+def hmp_data_format(data, sfreq, events=None, offset=0, offset_before=0, participants=[], epochs=None, channels=None, metadata=None):
 
     '''
     Converting 3D matrix with dimensions (participant) * trials * channels * sample into xarray Dataset
@@ -452,6 +455,10 @@ def hmp_data_format(data, sfreq, events=None, offset=0, participants=[], epochs=
         automated event detection method of MNE is not appropriate 
     sfreq : float
         Sampling frequency of the data
+    offset : int
+        Number of samples to offset after RT
+    offset_before : int
+        Number of samples to offset before stimulus
     participants : list
         List of participant index
     epochs : list
@@ -480,7 +487,7 @@ def hmp_data_format(data, sfreq, events=None, offset=0, participants=[], epochs=
                     "channels":  channels,
                     "samples": np.arange(n_samples)
                 },
-                attrs={'sfreq':sfreq,'offset':offset}
+                attrs={'sfreq':sfreq,'offset':offset,'offset_before':offset_before}
                 )
     else:
         data = xr.Dataset(
@@ -493,7 +500,7 @@ def hmp_data_format(data, sfreq, events=None, offset=0, participants=[], epochs=
                     "channels":  channels,
                     "samples": np.arange(n_samples)
                 },
-                attrs={'sfreq':sfreq,'offset':offset}
+                attrs={'sfreq':sfreq,'offset':offset,'offset_before':offset_before}
                 )
     if metadata is not None:
         metadata = metadata.loc[epochs]

@@ -345,6 +345,7 @@ class hmp:
             traces_sp = [x[5] for x in estimates]
             locations_dev_sp = [x[6] for x in estimates]
             param_dev_sp = [x[7] for x in estimates]
+            lkh_all_sp = [x[8] for x in estimates]
 
             if return_max:
                 max_lkhs = np.argmax(lkhs_sp)
@@ -356,6 +357,7 @@ class hmp:
                 traces = traces_sp[max_lkhs]
                 locations_dev = locations_dev_sp[max_lkhs]
                 param_dev = param_dev_sp[max_lkhs]
+                lkh_all = lkh_all_sp[max_lkhs]
             else:
                 lkh = lkhs_sp
                 mags = mags_sp
@@ -395,7 +397,8 @@ class hmp:
             n_event_xreventprobs = 1
             n_stage = 1
         if len(np.shape(eventprobs)) == 3:
-            xrlikelihoods = xr.DataArray(lkh , name="likelihoods")
+            xrlikelihoods = xr.DataArray(lkh, name="likelihoods")
+            xrlikelihoods_all = xr.DataArray(lkh_all, name="likelihoods_all", dims=("trial_x_participant"))
             xrtraces = xr.DataArray(traces, dims=("em_iteration"), name="traces", coords={'em_iteration':range(len(traces))})
             xrlocations_dev = xr.DataArray(locations_dev, dims=("em_iteration", "stage"), name="locations_dev", coords={'em_iteration':range(len(locations_dev)),'stage':range(n_event_xr+1)})
             xrparam_dev = xr.DataArray(param_dev, dims=("em_iteration","stage",'parameter'), name="param_dev", coords=[range(len(param_dev)), range(n_stage), ['shape','scale']])
@@ -440,7 +443,7 @@ class hmp:
             xreventprobs = xreventprobs.transpose('iteration','trial_x_participant','samples','event')
             xrlocations = xr.DataArray(locations, dims=("iteration","stage"), name="locations", 
                             coords = {'iteration': range(len(lkh))})
-        estimated = xr.merge((xrlikelihoods, xrparams, xrmags, xreventprobs, xrlocations, xrtraces, xrlocations_dev, xrparam_dev))
+        estimated = xr.merge((xrlikelihoods, xrlikelihoods_all, xrparams, xrmags, xreventprobs, xrlocations, xrtraces, xrlocations_dev, xrparam_dev))
 
         if verbose:
             print(f"parameters estimated for {n_events} events model")
@@ -878,7 +881,7 @@ class hmp:
         if n_cond is not None:
             lkh, eventprobs = self.estim_probs_conds(magnitudes, parameters, locations, mags_map, pars_map, conds, cpus=cpus)
         else:
-            lkh, eventprobs = self.estim_probs(magnitudes, parameters, locations, n_events)
+            lkh, eventprobs, lkh_all = self.estim_probs(magnitudes, parameters, locations, n_events)
 
         traces = [lkh]
         locations_dev = [locations.copy()] #store development of locations
@@ -954,7 +957,7 @@ class hmp:
                 if n_cond is not None:
                     lkh, eventprobs = self.estim_probs_conds(magnitudes, parameters, locations, mags_map, pars_map, conds, cpus=cpus)
                 else:
-                    lkh, eventprobs = self.estim_probs(magnitudes, parameters, locations, n_events)
+                    lkh, eventprobs, lkh_all = self.estim_probs(magnitudes, parameters, locations, n_events)
                 
                 traces.append(lkh)
                 locations_dev.append(locations.copy())
@@ -965,10 +968,10 @@ class hmp:
         if n_cond is not None:
             _, eventprobs = self.estim_probs_conds(magnitudes, parameters, np.zeros(locations.shape).astype(int), mags_map, pars_map, conds, cpus=cpus)
         else:
-            _, eventprobs = self.estim_probs(magnitudes, parameters, np.zeros(locations.shape).astype(int), n_events)
+            _, eventprobs, _ = self.estim_probs(magnitudes, parameters, np.zeros(locations.shape).astype(int), n_events)
         if i == max_iteration:
             warn(f'Convergence failed, estimation hitted the maximum number of iteration ({int(max_iteration)})', RuntimeWarning)
-        return lkh, magnitudes, parameters, eventprobs, locations, np.array(traces), np.array(locations_dev), np.array(param_dev)
+        return lkh, magnitudes, parameters, eventprobs, locations, np.array(traces), np.array(locations_dev), np.array(param_dev), lkh_all
 
 
     def get_magnitudes_parameters_expectation(self,eventprobs,subset_epochs=None):
@@ -1155,8 +1158,9 @@ class hmp:
                 eventprobs = eventprobs / eventprobs.sum(axis=0)
 
         else:
-
-            likelihood = np.sum(np.log(eventprobs[:,:,0].sum(axis=0)))#sum over max_samples to avoid 0s in log
+            # Per trial likelihoods
+            likelihoods = np.log(eventprobs[:,:,0].sum(axis=0))
+            likelihood = np.sum(likelihoods)#sum over max_samples to avoid 0s in log
             eventprobs = eventprobs / eventprobs.sum(axis=0)
         #conversion to probabilities, divide each trial and state by the sum of the likelihood of the n points in a trial
 
@@ -1165,7 +1169,7 @@ class hmp:
         elif by_trial_lkh:
             return forward * backward
         else:
-            return [likelihood, eventprobs]
+            return [likelihood, eventprobs, likelihoods]
 
     def estim_probs_conds(self, magnitudes, parameters, locations, mags_map, pars_map, conds, lkh_only=False, cpus=1):
         '''
@@ -1205,8 +1209,9 @@ class hmp:
             for c in range(n_conds):
                 magnitudes_cond = magnitudes[c, mags_map[c,:]>=0, :] #select existing magnitudes
                 parameters_cond = parameters[c, pars_map[c,:]>=0, :] #select existing params
-                locations_cond = locations[c, pars_map[c,:]>=0] 
-                likes_events_cond.append(self.estim_probs(magnitudes_cond, parameters_cond, locations_cond, subset_epochs = (conds == c)))
+                locations_cond = locations[c, pars_map[c,:]>=0]
+                lkh, eventprobs, _ = self.estim_probs(magnitudes_cond, parameters_cond, locations_cond, subset_epochs = (conds == c))
+                likes_events_cond.append((lkh, eventprobs))
 
         likelihood = np.sum([x[0] for x in likes_events_cond])
         eventprobs = np.zeros((self.max_d, len(conds), mags_map.shape[1]))
