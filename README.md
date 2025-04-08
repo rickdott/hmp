@@ -3,12 +3,22 @@ HMP
 
 
 ![](plots/general_illustration.png)
+# Fork information
+This fork was created for the paper (IN SUBMISSION) titled: **Sequence models for by-trial decoding of cognitive strategies from neural data**, for archival reasons and to save some changes that were made for this paper specifically.
 
+Changes include:
+- Ability to fix parameters and magnitudes of `n` first events in `hmp.models.fit()`, this allows HMP to assume some existing events and estimate the number of events that occur after. Uses new 'premags' and 'prepars' parameters in `hmp.models.fit()`, example usage in `refit.ipynb`.
+- Include additional samples pre-stimulus and post-response, in `hmp.utils.read_mne_data()`, added 'offset_before_stim' parameter, values are in seconds. Manual adjustment of the offset `xr.Dataset` variable is required after reading the data to ensure that HMP does not view the 'offset_after_resp' samples as HMP samples. Example usage in `loading.ipynb`.
+- Drop samples where force exceeded a certain point before RT, this is very specific to the dataset used in the paper, explanation is in the paper and implementation is as new 'drop_force' parameter in `hmp.utils.read_mne_data()`.
+
+Install locally by cloning this forked repository and running: `pip install -e .` from the folder you have cloned.
+
+# Original Readme
 > [!NOTE]
 > The preprint is now live : [Trial-by-trial detection of cognitive events in neural time-series](https://www.biorxiv.org/content/10.1101/2024.02.13.580102v1)
 
 
-HMP is an open-source Python package to analyze neural time-series (e.g. EEG) to estimate Hidden Multivariate Patterns (HMP).  HMP is described in Weindel, van Maanen & Borst (2024, [see the preprint on biorXiv](https://www.biorxiv.org/content/10.1101/2024.02.13.580102v1)) and is a generalized and simplified version of the HsMM-MVPA method developed by Anderson, Zhang, Borst, & Walsh  ([2016](https://psycnet.apa.org/doi/10.1037/rev0000030)).
+HMP is an open-source Python package to analyze neural time-series (e.g. EEG) to estimate Hidden Multivariate Patterns (HMP).  HMP is described in Weindel, van Maanen & Borst (2024, [see the preprint on biorXiv](https://www.biorxiv.org/content/10.1101/2024.02.13.580102v1)) and is a generalized and simplified version of the HsMM-MVPA method developed by Anderson, Zhang, Borst, & Walsh ([2016](https://psycnet.apa.org/doi/10.1037/rev0000030)).
 
 As a summary of the method, an HMP model parses the reaction time into a number of successive events determined based on patterns in a neural time-serie. Hence any reaction time can then be described by a number of cognitive events and the duration between them estimated using HMP. The important aspect of HMP is that it is a whole-brain analysis (or whole scalp analysis) that estimates the onset of events on a single-trial basis. These by-trial estimates allow you then to further dig into any aspect you are interested in a signal:
 - Describing an experiment or a clinical sample in terms of events detected in the EEG signal
