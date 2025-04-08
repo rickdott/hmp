@@ -17,6 +17,9 @@ from hmp import mcca
 import json
 import mne
 import os
+import matplotlib.pyplot as plt
+import random
+from scipy.signal import find_peaks
 
 filterwarnings('ignore', 'Degrees of freedom <= 0 for slice.', )#weird warning, likely due to nan in xarray, not important but better fix it later 
 filterwarnings('ignore', 'Mean of empty slice')#When trying to center all-nans trials
@@ -70,7 +73,7 @@ def read_mne_data(pfiles, event_id=None, resp_id=None, epoched=False, sfreq=None
                  subj_idx=None, metadata=None, events_provided=None, rt_col='rt', rts=None,
                  verbose=True, tmin=-.2, tmax=5, offset_after_resp = 0, offset_before_stim = 0,
                  high_pass=None, low_pass = None, pick_channels = 'eeg', baseline=(None, 0),
-                 upper_limit_RT=np.inf, lower_limit_RT=0, reject_threshold=None, scale=1, reference=None, ignore_rt=False):
+                 upper_limit_RT=np.inf, lower_limit_RT=0, reject_threshold=None, scale=1, reference=None, ignore_rt=False, drop_force=False):
     ''' 
     Reads EEG/MEG data format (.fif or .bdf) using MNE's integrated function .
     
@@ -142,6 +145,8 @@ def read_mne_data(pfiles, event_id=None, resp_id=None, epoched=False, sfreq=None
         What reference to use (see MNE documentation), if None, keep the existing one
     ignore_rt: bool
         Use RT to parse the epochs (False, Default) or ignore the RT and parse up to tmaxx in epochs (True)
+    drop_force: bool
+        Drop epochs where excessive force occurred before RT
     Returns
     -------
     epoch_data : xarray
@@ -181,7 +186,9 @@ def read_mne_data(pfiles, event_id=None, resp_id=None, epoched=False, sfreq=None
                 raise ValueError(f'Unknown EEG file format for participant {participant}')
             if sfreq is None: 
                 sfreq = data.info['sfreq']
-
+            # Not sure if this works here
+            if drop_force: 
+                drop_force_epochs(epochs)
             if 'response' not in list(resp_id.keys())[0]:
                 resp_id = {f'response/{k}': v for k, v in resp_id.items()}
             if events_provided is None:
@@ -241,6 +248,8 @@ def read_mne_data(pfiles, event_id=None, resp_id=None, epoched=False, sfreq=None
         else:
             if '.fif' in participant:
                 epochs = mne.read_epochs(participant, preload=True, verbose=verbose)
+                if drop_force: 
+                    drop_force_epochs(epochs)
                 if high_pass is not None or low_pass is not None:
                     epochs.filter(high_pass, low_pass, fir_design='firwin', verbose=verbose)
                 if sfreq is None: 
@@ -729,8 +738,8 @@ def transform_data(epoch_data, participants_variable="participant", apply_standa
                     pca_ready_data = pca_ready_data.transpose('all','channels')
             # Performing spatial PCA on the average var-cov matrix
             pca_weights = _pca(pca_ready_data, n_comp, data.coords["channels"].values)
-            data = data @ pca_weights
-            data.attrs['pca_weights'] = pca_weights
+        data = data @ pca_weights
+        data.attrs['pca_weights'] = pca_weights
     elif method == 'mcca':
         ori_coords = data.drop_vars('channels').coords
         if n_ppcas is None:
@@ -1238,3 +1247,104 @@ def epoch_between_events(raw, events, event_id_from, event_id_to, baseline=None,
         epochs = epochs.decimate(decim, offset=0, verbose=verbose)
 
     return epochs
+
+def drop_force_epochs(epochs: mne.Epochs):
+    def calc_baseline(force, rt_sample, t=0.2):
+        baseline = force[:, :int(0.2 * sfreq)].mean(axis=1)
+        return baseline
+    
+    # Amount of times a button could (approximately) be pressed by a human
+    MAX_BUTTON_PRESSES = 10
+
+    # (epochs, channels, samples)
+    force_channels = epochs.get_data(['Erg1', 'Erg2'])
+
+    # (epochs)
+    rts = epochs.metadata['rt']
+    force_condition = epochs.metadata['force']
+    sfreq = epochs.info['sfreq']
+    tmin = epochs.tmin
+
+    bad_epochs = []
+
+    forces = [[], []]
+
+    # Get two force distributions, one for low and one for high force
+    for idx in range(force_channels.shape[0]):
+        rt = rts[idx]
+        if np.isnan(rt):
+            continue
+
+        force = force_channels[idx, ...]
+        rt_sample = int((rt - tmin) * sfreq)
+        force_corrected = force - calc_baseline(force, rt_sample)[:, np.newaxis]
+
+        # Trial is faulty, dont record its force
+        peaks_left = find_peaks(force_corrected[0], prominence=0.002)[0]
+        peaks_right = find_peaks(force_corrected[1], prominence=0.002)[0]
+
+        if len(peaks_left) > MAX_BUTTON_PRESSES or len(peaks_right) > MAX_BUTTON_PRESSES:
+            continue
+        rt_forces = force_corrected[:, rt_sample]
+        max_force = max(rt_forces)
+        forces[0 if force_condition[idx] == 'low' else 1].append(max_force)
+        
+    low_forces = forces[0]
+    high_forces = forces[1]
+    plt.hist(low_forces, bins=50, alpha=0.5)
+    plt.hist(high_forces, bins=50, alpha=0.5)
+    plt.show()
+    low_threshold = np.median(low_forces)
+    high_threshold = np.median(high_forces)
+    low_std = np.std(low_forces)
+    high_std = np.std(high_forces)
+
+    if len(low_forces) < 1 or len(high_forces) < 1:
+        return 0
+    
+    low_iqr_75, low_iqr_25 = np.percentile(low_forces, [75, 25])
+    low_iqr = low_iqr_75 - low_iqr_25
+    low_threshold -= low_iqr
+
+    high_iqr_75, high_iqr_25 = np.percentile(high_forces, [75, 25])
+    high_iqr = high_iqr_75 - high_iqr_25
+    high_threshold -= high_iqr
+
+    plotcounter = 0
+    
+    for idx in range(force_channels.shape[0]):
+        rt = rts[idx]
+        if np.isnan(rt):
+            continue
+
+        force = force_channels[idx, ...]
+        rt_sample = int((rt - tmin) * sfreq)
+
+        baseline = calc_baseline(force, rt_sample)
+        force_corrected = force - baseline[:, np.newaxis]
+
+        is_low = force_condition[idx] == 'low'
+        threshold = low_threshold if is_low else high_threshold
+        # threshold -= low_std if is_low else high_std
+        until_rt = force_corrected[:, :max(1, rt_sample - int(0.2 * sfreq))]
+
+        if np.any(until_rt > threshold):
+            peaks_left = find_peaks(force_corrected[0], prominence=0.002)[0]
+            peaks_right = find_peaks(force_corrected[1], prominence=0.002)[0]
+
+            # More than 10 button presses in 2 seconds, must be faulty
+            if len(peaks_left) > MAX_BUTTON_PRESSES or len(peaks_right) > MAX_BUTTON_PRESSES:
+                continue
+            # Plot
+            if plotcounter < 5 and random.random() < 0.1:
+                plt.figure(figsize=(10, 6))
+                plt.plot(force_corrected[0,:], label='left')
+                plt.plot(force_corrected[1,:], label='right')
+                plt.axvline(rt_sample, color='black', linestyle='--', label='RT')
+                plt.axhline(threshold, color='green', linestyle='--', label='threshold')
+                plt.legend()
+                plt.show()
+                plotcounter += 1
+            bad_epochs.append(idx)
+    epochs.drop(bad_epochs, reason='FORCE')
+    return len(bad_epochs)

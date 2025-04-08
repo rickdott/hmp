@@ -168,7 +168,7 @@ class hmp:
             self.convolution = np.convolve
         self.trial_coords = data.unstack().sel(component=0,samples=0).rename({'epochs':'trials'}).\
             stack(trial_x_participant=['participant','trials']).dropna(dim="trial_x_participant",how="all").coords
-        if epoch_data is not None:
+        if epoch_data is not None and self.location_corr_threshold is not None:
             if len(epoch_data.dims) == 4:
                 self.stacked_epoch_data = epoch_data.rename({'epochs':'trials'}).stack(trial_x_participant=('participant','trials')).data.fillna(0).drop_duplicates('trial_x_participant')
             else: #assume already stacked
@@ -375,7 +375,7 @@ class hmp:
                     param_dev[i, :len(_i),:,:] = _i
             
         elif starting_points==1:#informed starting point
-            lkh, mags, pars, eventprobs, locations, traces, locations_dev, param_dev = self.EM(initial_m, initial_p,\
+            lkh, mags, pars, eventprobs, locations, traces, locations_dev, param_dev, lkh_all = self.EM(initial_m, initial_p,\
                                          maximization, magnitudes_to_fix, parameters_to_fix, \
                                          max_iteration, tolerance, min_iteration, locations=locations)
 
@@ -385,7 +385,7 @@ class hmp:
             initial_p = parameters
             if np.any(magnitudes)== None:
                 magnitudes = np.zeros((n_events, self.n_dims), dtype=np.float64)
-            lkh, mags, pars, eventprobs, locations, traces, locations_dev, param_dev = self.EM(magnitudes, parameters, maximization, magnitudes_to_fix, parameters_to_fix,\
+            lkh, mags, pars, eventprobs, locations, traces, locations_dev, param_dev, lkh_all = self.EM(magnitudes, parameters, maximization, magnitudes_to_fix, parameters_to_fix,\
                                         max_iteration, tolerance, min_iteration, locations=locations)
         if len(np.shape(eventprobs)) == 3:
             n_event_xr = n_event_xreventprobs = len(mags)
@@ -1146,6 +1146,7 @@ class hmp:
             eventsums = eventprobs[:,:,0].sum(axis=0)
             eventsums[eventsums != 0] = np.log(eventsums[eventsums != 0])
             eventsums[eventsums == 0] = -np.inf
+            likelihoods = eventsums
             likelihood = np.sum(eventsums)
 
             #set eventprobs, check if any are 0   
@@ -2087,7 +2088,7 @@ class hmp:
         resetwarnings()
         return lkhs_sp, mags_sp, pars_sp, times_sp
     
-    def fit(self, step=None, verbose=True, end=None, tolerance=1e-3, diagnostic=False, return_estimates=False, by_sample=False, pval = None):
+    def fit(self, step=None, verbose=True, end=None, tolerance=1e-3, diagnostic=False, return_estimates=False, by_sample=False, pval = None, premags=None, prepars=None):
         """
          Instead of fitting an n event model this method starts by fitting a 1 event model (two stages) using each sample from the time 0 (stimulus onset) to the mean RT. 
          Therefore it tests for the landing point of the expectation maximization algorithm given each sample as starting point and the likelihood associated with this landing point. 
@@ -2114,7 +2115,6 @@ class hmp:
                 been identified. This in case the method jumped over a local maximum in an earlier estimation.
              pval: float
                  p-value for the detection of the first event, test the first location for significance compared to a distribution of noise estimates
-         
          Returns: 
          	 A the fitted HMP mo
         """
@@ -2126,10 +2126,17 @@ class hmp:
         if diagnostic:
             cycol = cycle(default_colors)
         pbar = tqdm(total = int(np.rint(end)))#progress bar
-        n_events, j, time = 1, 1, 0 #j = sample after last placed event
+        n_events_fixed = prepars.shape[0] if prepars is not None else 0
+        n_events = n_events_fixed + 1 if prepars is not None else 1
+        j, time = 1, 0 #j = sample after last placed event
         #Init pars (need this for min_model)
         pars = np.zeros((max_event_n+1,2))
         pars[:,0] = self.shape #final gamma parameters during estimation, shape x scale
+        fixed_indices = None
+        if prepars is not None:
+            pars[:n_events_fixed] = prepars
+            fixed_indices = list(range(0, n_events_fixed))
+
         pars_prop = pars[:n_events+1].copy() #gamma params of current estimation
         pars_prop[0,1] = self.mean_to_scale(j*step, self.shape) #initialize gamma_parameters at 1 sample
         last_stage = self.mean_to_scale(end-j*step, self.shape) #remainder of time
@@ -2137,7 +2144,8 @@ class hmp:
 
         #Init mags
         mags = np.zeros((max_event_n, self.n_dims)) #final mags during estimation
-
+        if premags is not None:
+            mags[:n_events_fixed] = premags
         #Init locations
         locations = np.zeros((max_event_n+1,),dtype=int) #location per stage
         locations[1:-1] = self.location
@@ -2159,7 +2167,7 @@ class hmp:
             mags_props, pars_prop, locations_props = self.propose_fit_params(n_events, by_sample, step, j, mags, pars, locations, end)
             last_stage = pars_prop[n_events,1]
             #Estimate model based on these propositions
-            solutions = self.fit_single(n_events, mags_props, pars_prop, None, None,\
+            solutions = self.fit_single(n_events, mags_props, pars_prop, fixed_indices, fixed_indices,\
                             verbose=False, cpus=1,\
                             tolerance=tolerance, locations=locations_props)
             sol_lkh = solutions.likelihoods.values
@@ -2231,7 +2239,7 @@ class hmp:
         pars = pars[:n_events+1, :]
         locs = locations[:n_events+1]
         if n_events > 0:
-            fit = self.fit_single(n_events, parameters=pars, magnitudes=mags, verbose=verbose, cpus=1)
+            fit = self.fit_single(n_events, parameters=pars, magnitudes=mags, parameters_to_fix=fixed_indices, magnitudes_to_fix=fixed_indices, verbose=verbose, cpus=1)
 
             #check if final fit didn't lead to -inf (sometimes happens when leaving out locations on final step)
             if fit.likelihoods.values == -np.inf:
