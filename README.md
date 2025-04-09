@@ -7,8 +7,8 @@ HMP
 This fork was created for the paper (IN SUBMISSION) titled: **Sequence models for by-trial decoding of cognitive strategies from neural data**, for archival reasons and to save some changes that were made for this paper specifically.
 
 Changes include:
-- Ability to fix parameters and magnitudes of `n` first events in `hmp.models.fit()`, this allows HMP to assume some existing events and estimate the number of events that occur after. Uses new 'premags' and 'prepars' parameters in `hmp.models.fit()`, example usage in `refit.ipynb`.
-- Include additional samples pre-stimulus and post-response, in `hmp.utils.read_mne_data()`, added 'offset_before_stim' parameter, values are in seconds. Manual adjustment of the offset `xr.Dataset` variable is required after reading the data to ensure that HMP does not view the 'offset_after_resp' samples as HMP samples. Example usage in `loading.ipynb`.
+- Ability to fix parameters and magnitudes of `n` first events in `hmp.models.fit()`, this allows HMP to assume some existing events and estimate the number of events that occur after. Uses new 'premags' and 'prepars' parameters in `hmp.models.fit()`, example usage in `SoCOM/weindel/7_refit.ipynb`.
+- Include additional samples pre-stimulus and post-response, in `hmp.utils.read_mne_data()`, added 'offset_before_stim' parameter, values are in seconds. Manual adjustment of the offset `xr.Dataset` variable is required after reading the data to ensure that HMP does not view the 'offset_after_resp' samples as HMP samples. Example usage in `SoCOM/weindel/1_loading.ipynb`.
 - Drop samples where force exceeded a certain point before RT, this is very specific to the dataset used in the paper, explanation is in the paper and implementation is as new 'drop_force' parameter in `hmp.utils.read_mne_data()`.
 
 Install locally by cloning this forked repository and running: `pip install -e .` from the folder you have cloned.
